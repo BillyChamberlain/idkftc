@@ -16,9 +16,8 @@ public class LimelightCam {
     public LimelightCam(HardwareMap hardwareMap) {
         limelight = hardwareMap.get(Limelight3A.class, "limelight");
         limelight.start();
-        limelight.pipelineSwitch(8); //The settings/configs of the limelight, make it so you have pre-determined settings on the limelight
+        limelight.pipelineSwitch(0); //The settings/configs of the limelight, make it so you have pre-determined settings on the limelight
         imu = hardwareMap.get(IMU.class, "imu");
-        start();
         RevHubOrientationOnRobot revHubOrientationOnRobot = new RevHubOrientationOnRobot(RevHubOrientationOnRobot.LogoFacingDirection.UP,
                 RevHubOrientationOnRobot.UsbFacingDirection.FORWARD);
         imu.initialize(new IMU.Parameters(revHubOrientationOnRobot));
@@ -30,16 +29,12 @@ public class LimelightCam {
 
     public LLResult getVars(Telemetry telemetry){
         YawPitchRollAngles orientation  = imu.getRobotYawPitchRollAngles();
-        limelight.updateRobotOrientation(orientation.getYaw());
+        //TODO: maybe add limelight.updateRobotOrientation(orientation.getYaw());
         LLResult llResult= limelight.getLatestResult();
-        telemetry.addData("null?", llResult==(null));
+/*        telemetry.addData("null?", llResult==(null));
         telemetry.addData("Valid?", llResult.isValid());
-        telemetry.addData("pipeline:", llResult.getPipelineIndex());
+        telemetry.addData("pipeline:", llResult.getPipelineIndex());*/
         if(llResult != null){
-            Pose3D botPose = llResult.getBotpose_MT2();
-            telemetry.addData("Tx", llResult.getTx());
-            telemetry.addData("Ty", llResult.getTy());
-            telemetry.addData("Ta", llResult.getTa());
             try {
                 telemetry.addData("AllianceID", llResult.getFiducialResults().get(0).getFiducialId());
             }
@@ -54,7 +49,6 @@ public class LimelightCam {
             }
 
         }
-        telemetry.update();
         return llResult;
     }
 }
