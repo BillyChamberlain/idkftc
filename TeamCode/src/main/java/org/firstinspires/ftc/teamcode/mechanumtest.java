@@ -3,6 +3,7 @@ package org.firstinspires.ftc.teamcode;
 import com.qualcomm.hardware.gobilda.GoBildaPinpointDriver;
 import com.qualcomm.hardware.limelightvision.LLResult;
 import com.qualcomm.hardware.limelightvision.LLResultTypes;
+import com.qualcomm.hardware.lynx.LynxModule;
 import com.qualcomm.robotcore.eventloop.opmode.OpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 import com.qualcomm.robotcore.hardware.CRServo;
@@ -26,11 +27,14 @@ import java.util.List;
 import java.util.Locale;
 
 /*
- * The original TeleOp (Will's code), with these ADDED (each one is marked "ADDED" below):
+ * The original TeleOp (Will's code), split into methods (loop() is the list of steps), with these ADDED:
  *   - AUTO AIM: the turret points at your alliance's hive by itself (TurretAimer.java does the math).
  *       INIT: X = BLUE, B = RED.  D-pad DOWN = switch color, D-pad UP = the other hive of your color.
  *       D-pad LEFT/RIGHT still moves the turret by hand (as before); let go and auto aim takes over again.
- *       LT + RT together = "the robot is in the start corner": resets the odometry.
+ *       LT + RT pressed together = "the robot is in the start corner": resets the odometry.
+ *   - AUTO POWER / ANGLE, with Will's shot math: the flywheel speed is one of Will's 3 speeds, picked by how
+ *     far away the hive is; then Will's angleFromRPS() gives the launch angle for that speed and the hood
+ *     moves there. Until a hive has been seen, B / LB / RB work as before (bpow) and the hood stays put.
  *   - Turret limits / ticks per degree from the Limits Tuner and Ticks Per Degree OpModes; aim gains in
  *     TurretTuning (live in Panels).
  *   - Clencher: Y = deployed <-> retracted (positions from the Clencher Tuner).
@@ -40,7 +44,6 @@ import java.util.Locale;
  *   - Strafe stick fixed (it slid the robot the opposite way).
  *   - Turned off (commented out): the old "Limelight -> Pinpoint position override". The camera rides on the
  *     turret, so it broke the auto aim's odometry. X/Y on the Driver Station now count from INIT (or LT+RT).
- *   - The hood isn't moved in this TeleOp (RT/LT used to move it; they are the shot and the intake now).
  */
 @TeleOp
 public class mechanumtest extends OpMode {
@@ -62,20 +65,28 @@ public class mechanumtest extends OpMode {
 
     public int ticks;
 
-    private final float flyconstant = 1f; // TODO: NEEDS TO BE CHANGED
+    // ADDED value: was 1 ("TODO: NEEDS TO BE CHANGED"). How much of the flywheel's surface speed the ball gets.
+    // 0.42 comes from working angleFromRPS backwards from the two good shots saved on the robot (51.7 in at
+    // 819 ticks/s with the hood at 50%, 64.3 in at 918 ticks/s at 58%): both gave 0.41-0.44. Tune it here.
+    private final float flyconstant = 0.42f;
 
     private final float flywheel_dia = 0.1202436f;
 
     //TODO: Change these vals to match field size
+    // ADDED values (the speeds were 3000 / 4000 / 5000 RPM, which were too fast for the hood past about 1.2 m:
+    // the ball would go long). These fit the two good shots saved on the robot and keep the hood between 40
+    // and 70 degrees: up to 1 m at 2800 RPM, 1-2 m at 2150 RPM. The CLOSE step is faster than the middle one on
+    // purpose: up close the ball has to climb steeply to the hive. 2-3 m at 2400 RPM can still hit the hood's
+    // end in places until the hood angles and hive height (below) are measured.
     private final double slowspeedlen = 1;
-    private final double slowspeedspeed = 3000 / 60.0;
+    private final double slowspeedspeed = 2800 / 60.0;
 
 
     private final double medspeedlen = 2;
-    private final double medspeedspeed = 4000 / 60.0;
+    private final double medspeedspeed = 2150 / 60.0;
 
     private final double fastspeedlen = 3;
-    private final double fastspeedspeed = 5000 / 60.0;
+    private final double fastspeedspeed = 2400 / 60.0;
 
     private boolean prevA;
     private boolean prevB;
@@ -137,6 +148,15 @@ public class mechanumtest extends OpMode {
     private static final int[] BLUE_CELLS = {3, 2};
     private static final int NO_GOAL = 4;   // aimer that never sees anything (until a hive of our color is seen)
 
+    // ======================= ADDED: AUTO POWER / ANGLE SETTINGS =======================
+    private static final double FLYWHEEL_TICKS_PER_REV = 28;           // goBILDA 6000 rpm motor (1:1): 28 ticks per turn
+    private static final double GOAL_HEIGHT_ABOVE_SHOOTER_M = 30 * 0.0254;   // hive opening above where the ball leaves: MEASURE
+    private static final double HOOD_ANGLE_AT_BOTTOM_DEG = 70.0;        // launch angle with the hood at its bottom stop: CHECK
+    private static final double HOOD_ANGLE_AT_TOP_DEG = 40.0;           // launch angle with the hood at its top stop: CHECK
+    private static final double HOOD_FULL_TRAVEL_SEC = 1.2;             // full-power time from bottom stop to top stop: MEASURE
+    private static final double SPEED_STEP_MARGIN_M = 0.1;              // only change speed steps 10 cm past a line (no flip-flopping)
+    private static final String[] SPEED_NAMES = {"slow", "medium", "fast"};
+
     // ======================= ADDED: CLENCHER, RT, LT, LIGHTS SETTINGS =======================
     // Default clencher positions (the Clencher Tuner saves better ones): SHUT = retracted, OPEN = deployed
     static final double CLENCHER_SHUT_POS = 0.34;
@@ -149,6 +169,7 @@ public class mechanumtest extends OpMode {
 
     // ======================= ADDED: working state =======================
     private final ElapsedTime clock = new ElapsedTime();
+    private double now, dt, lastLoopMs = Double.NaN;   // this loop's time (ms) and seconds since the last loop
     private boolean isRedAlliance = true;
     private final TurretAimer[] aimers = new TurretAimer[5];
     private TurretAimer aimer;
@@ -160,7 +181,9 @@ public class mechanumtest extends OpMode {
     private double lastGoodX = 0, lastGoodY = 0;   // last good Pinpoint x/y (one bad read mustn't look like a jump)
     private double ltDownSinceMs = Double.NaN, rtDownSinceMs = Double.NaN;   // for the LT+RT chord
     private boolean turretScaleMeasured;
+    private boolean limitsFromTuner;        // true if the Limits Tuner's saved limits loaded
     private double lastPictureTs = Double.NaN, lastPictureSig = Double.NaN;
+    private Target[] seen = new Target[CELL_BASES.length];   // what the newest camera picture shows
     private String tagsInView = "none";
     private final TurretAimer.ClusterFit[] clusterFits = {
             new TurretAimer.ClusterFit(), new TurretAimer.ClusterFit(),
@@ -176,9 +199,22 @@ public class mechanumtest extends OpMode {
     private Servo turretLight, flyLight;
     private double turretLightUntilMs = Double.NEGATIVE_INFINITY;
     private boolean flyLightOn;
-    private double lastLoopMs = Double.NaN;
+    private final HoodController hood = new HoodController();
+
+    // ADDED: what this loop worked out (used by the steps after it)
+    private Pose2D currentPose;
+    private double turretDeg;
+    private Target target;                  // the hive we aim at, if the camera sees it now
+    private boolean tracking, parked, locked, bothTriggers, feedActive;
+    private double shotDistanceM = Double.NaN;   // distance to the hive (meters), NaN until known
+    private int speedStep = -1;             // 0 slow, 1 medium, 2 fast (Will's 3 speeds); -1 = no distance yet
+    private double flyTargetTps;            // flywheel speed asked for
+    private double launchAngleDeg = Double.NaN;   // hood angle asked for (NaN = this speed can't reach)
 
     public void init(){
+        // ADDED: one bulk read per hub per loop for all motor encoders (faster loops)
+        for (LynxModule hub : hardwareMap.getAll(LynxModule.class)) hub.setBulkCachingMode(LynxModule.BulkCachingMode.AUTO);
+
         //Drive
         RF = hardwareMap.get(DcMotor.class, "RF");
         RB = hardwareMap.get(DcMotor.class, "RB");
@@ -211,37 +247,11 @@ public class mechanumtest extends OpMode {
 
 
         pinpoint = hardwareMap.get(GoBildaPinpointDriver.class, "odcpu");
+        setUpOdometry();   // ADDED
 
-        // ADDED: the odometry pods' settings, so x/y are right for the auto aim
-        pinpoint.setOffsets(X_POD_OFFSET_MM, Y_POD_OFFSET_MM, DistanceUnit.MM);
-        pinpoint.setEncoderResolution(POD_TYPE);
-        pinpoint.setEncoderDirections(X_POD_DIRECTION, Y_POD_DIRECTION);
-        pinpoint.resetPosAndIMU();   // robot must be still for a moment
-        pinpoint.setPosition(new Pose2D(DistanceUnit.MM, 0, 0, AngleUnit.DEGREES, 0));
-
-        // ADDED: auto aim setup
-        turret_aim.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
-        applyTurretMotorPidf();
-        TURRET_TICKS_PER_DEGREE = LimitsTuner.ticksPerDegreeInUse();   // Ticks Per Degree OpMode / camera check, else 4.0
-        turretScaleMeasured = LimitsTuner.isUsableMethod(LimitsTuner.calibrationMethod())
-                && !Double.isNaN(LimitsTuner.loadTicksPerDegree());
-        int[] saved = LimitsTuner.loadLimits();                         // Limits Tuner, else the original limits
-        if (saved != null) {
-            minticks = ticks + saved[0];
-            maxticks = ticks + saved[1];
-        }
-        headingSign = LimitsTuner.loadHeadingSign();
-        for (int i = 0; i < aimers.length; i++) aimers[i] = new TurretAimer(turretDegrees(minticks), turretDegrees(maxticks));
-        aimer = aimers[NO_GOAL];
-
-        // ADDED: clencher positions from the Clencher Tuner; headlights (no crash if not configured)
-        double[] c = ClencherTuner.positionsInUse();   // {retracted, deployed}
-        clencherRetracted = c[0];
-        clencherDeployed = c[1];
-        turretLight = hardwareMap.tryGet(Servo.class, "turretLight");
-        flyLight = hardwareMap.tryGet(Servo.class, "flyLight");
-        if (turretLight != null) turretLight.setPosition(LIGHT_OFF);
-        if (flyLight != null) flyLight.setPosition(LIGHT_OFF);
+        initAutoAim();     // ADDED
+        initClencherAndLights();   // ADDED
+        hood.fullTravelSec = HOOD_FULL_TRAVEL_SEC;   // ADDED
     }
 
     // ADDED: pick the alliance during INIT (X = blue, B = red)
@@ -252,8 +262,7 @@ public class mechanumtest extends OpMode {
         telemetry.addData("Alliance", isRedAlliance ? "RED  (X = blue)" : "BLUE  (B = red)");
         telemetry.addData("Turret", "zeroed where it pointed when INIT was pressed: if it wasn't forward, STOP, point it forward, INIT again");
         telemetry.addData("Turret limits", "%d to %d ticks (%s), %.2f ticks/deg (%s)", minticks - initticks, maxticks - initticks,
-                LimitsTuner.loadLimits() != null ? "Limits Tuner" : "original", TURRET_TICKS_PER_DEGREE,
-                turretScaleMeasured ? "measured" : "Thursday's 4.0");
+                limitsFromTuner ? "Limits Tuner" : "original", TURRET_TICKS_PER_DEGREE, turretScaleMeasured ? "measured" : "Thursday's 4.0");
         telemetry.update();
     }
 
@@ -266,15 +275,33 @@ public class mechanumtest extends OpMode {
         lastClencherSendMs = clock.milliseconds();
     }
 
+    // The loop, one step per method (ADDED: split up so it reads top to bottom)
     public void loop(){
-        double now = clock.milliseconds();   // ADDED
-        double dt = Double.isNaN(lastLoopMs) ? 0.02 : Math.max(0.001, (now - lastLoopMs) / 1000.0);
+        now = clock.milliseconds();
+        dt = Double.isNaN(lastLoopMs) ? 0.02 : Math.max(0.001, (now - lastLoopMs) / 1000.0);
         lastLoopMs = now;
+
+        readSensors();          // odometry, turret encoder, camera
+        updateAutoAim();        // where is the hive? LOCKED?
+        handleTriggers();       // LT = intake, RT = shot, LT+RT = position reset
+        runIntakeAndTransfer(); // A (as before), LT, RT
+        drive();
+        runFlywheel();          // B / LB / RB (as before), or AUTO POWER once the hive's distance is known
+        runHood();              // AUTO ANGLE
+        runClencher();          // Y (as before) + keep it held
+        runTurret();            // D-pad by hand (as before), otherwise AUTO AIM
+        updateLights();
+        showTelemetry();
+    }
+
+    // ======================= the loop's steps =======================
+
+    private void readSensors() {
         pinpoint.update();
-        telemetry.addData("maxed?", maxed);
         ticks = turret_aim.getCurrentPosition();
-        telemetry.addData("ticks", ticks);
-        results = ll.getVars(telemetry);
+        // ADDED (faster): read the camera without LimelightCam.getVars(), which also read the gyro and added
+        // telemetry through exceptions every loop
+        results = ll.getLatest();
         boolean tagFound = false;
 
 // 1. Properly search for Tag 36 without overwriting the result
@@ -297,13 +324,9 @@ public class mechanumtest extends OpMode {
 //                    robotYaw_deg
 //            ));
 //        }
-        Pose2D currentPose = pinpoint.getPosition();
+        currentPose = pinpoint.getPosition();
 
-        telemetry.addData("X Position (in)", currentPose.getX(DistanceUnit.INCH));
-        telemetry.addData("Y Position (in)", currentPose.getY(DistanceUnit.INCH));
-        telemetry.addData("Heading (deg)", currentPose.getHeading(AngleUnit.DEGREES));
-
-        // ADDED note: Will's original sweep idea, left here turned off. The ADDED auto aim below replaces it
+        // ADDED note: Will's original sweep idea, left here turned off. The ADDED auto aim replaces it
         // (it sweeps between the same limits when no hive is seen). aimrightpositive / kp / tagFound belong to it.
 // 2. Update sweep direction based on soft limits
 //        if (ticks <= minticks) {
@@ -326,13 +349,15 @@ public class mechanumtest extends OpMode {
 //                turret_aim.setPower((aimrightpositive? 1 : -1) * kp * (tx-8));
 //
 //        }
+    }
 
-        // ======================= ADDED: AUTO AIM, where is the hive? =======================
-        double turretDeg = turretDegrees(ticks);
+    // ADDED: where is the hive, and is the turret LOCKED on it?
+    private void updateAutoAim() {
+        turretDeg = turretDegrees(ticks);
         double headingDeg = pinpoint.getHeading(UnnormalizedAngleUnit.DEGREES);   // doesn't jump at 180
-        boolean odometryOk = pinpoint.getDeviceStatus() == GoBildaPinpointDriver.DeviceStatus.READY;
         double robotX = currentPose.getX(DistanceUnit.INCH), robotY = currentPose.getY(DistanceUnit.INCH);
-        odometryOk = odometryOk && !Double.isNaN(robotX) && !Double.isNaN(robotY);
+        boolean odometryOk = pinpoint.getDeviceStatus() == GoBildaPinpointDriver.DeviceStatus.READY
+                && !Double.isNaN(robotX) && !Double.isNaN(robotY);
         if (odometryOk) { lastGoodX = robotX; lastGoodY = robotY; }
         for (TurretAimer a : aimers) {
             a.kP = TurretTuning.aimKP;   // gains: TurretTuning (live in Panels)
@@ -343,34 +368,46 @@ public class mechanumtest extends OpMode {
             a.useOdometry = odometryOk;
             a.record(now, turretDeg, headingSign * headingDeg, lastGoodX, headingSign * lastGoodY);
         }
-        applyTurretMotorPidf();
-
-        // LT + RT pressed TOGETHER (within 0.12 s, not during a shot): the robot is in the start corner ->
-        // reset the odometry (remembered hives are kept)
-        boolean ltNow = gamepad1.left_trigger > 0.5, rtNow = gamepad1.right_trigger > 0.5;
-        if (!ltNow) ltDownSinceMs = Double.NaN; else if (Double.isNaN(ltDownSinceMs)) ltDownSinceMs = now;
-        if (!rtNow) rtDownSinceMs = Double.NaN; else if (Double.isNaN(rtDownSinceMs)) rtDownSinceMs = now;
-        boolean bothTriggers = ltNow && rtNow && Math.abs(ltDownSinceMs - rtDownSinceMs) <= RT_CHORD_WAIT_MS
-                && Double.isNaN(feedStartMs);
-        if (bothTriggers && !resetChord) {
-            pinpoint.setPosition(new Pose2D(DistanceUnit.INCH, 0, 0, AngleUnit.DEGREES, 0));
-            for (TurretAimer a : aimers) a.resetMotion();
-            gamepad1.rumbleBlips(3);
-        }
-        resetChord = bothTriggers;
 
         // Each NEW camera picture (the SDK sends the same picture several times) tells every hive it shows
-        // where that hive is
+        // where that hive is. The tags are only looked through when a new picture arrives.
         double pictureTs = results != null ? results.getTimestamp() : Double.NaN;
         double pictureSig = pictureSignature(results);
-        boolean newPicture = results != null && (pictureTs != lastPictureTs || pictureSig != lastPictureSig);
-        if (results != null) { lastPictureTs = pictureTs; lastPictureSig = pictureSig; }
-        Target[] seen = findTargets(results, now);
-        for (int i = 0; i < seen.length; i++) {
-            if (seen[i] != null && newPicture) aimers[i].seeTarget(now, seen[i].tx, seen[i].frameAgeMs, seen[i].distanceIn);
+        if (results != null && (pictureTs != lastPictureTs || pictureSig != lastPictureSig)) {
+            lastPictureTs = pictureTs;
+            lastPictureSig = pictureSig;
+            seen = findTargets(results);
+            for (int i = 0; i < seen.length; i++) {
+                if (seen[i] != null) aimers[i].seeTarget(now, seen[i].tx, seen[i].frameAgeMs, seen[i].distanceIn);
+            }
+        } else if (results == null || results.getStaleness() > MAX_FRAME_AGE_MS) {
+            seen = new Target[CELL_BASES.length];   // the camera stopped sending: nothing in view
+            tagsInView = "none";
         }
 
-        // D-pad DOWN = switch color (red/blue); D-pad UP = the other hive of our color
+        chooseHive();
+        aimer = aimers[activeGoal >= 0 ? activeGoal : NO_GOAL];
+        target = activeGoal >= 0 ? seen[activeGoal] : null;
+        tracking = aimer.isTracking(now);
+        double aimErrorDeg = tracking ? aimer.errorDeg(now) : 0;
+        parked = tracking && aimer.isParked(now);
+        // LOCKED only when the camera itself sees the hive in the middle
+        locked = tracking && !parked && target != null
+                && Math.abs(target.tx) <= LOCKED_TOLERANCE_DEG + 1.0 && Math.abs(aimErrorDeg) <= LOCKED_TOLERANCE_DEG;
+
+        // Distance to the hive for the auto power/angle: the aim's remembered spot (smoothed), else the camera
+        double d = aimer.distanceNow(now);
+        if (Double.isNaN(d) && target != null) d = target.distanceIn;
+        if (!Double.isNaN(d)) shotDistanceM = d * 0.0254;
+        else if (!tracking) {   // no hive tracked (color switch, other hive not seen yet): back to B/LB/RB, hood holds
+            shotDistanceM = Double.NaN;
+            speedStep = -1;
+            launchAngleDeg = Double.NaN;
+        }
+    }
+
+    // ADDED: D-pad DOWN = switch color (red/blue); D-pad UP = the other hive of our color
+    private void chooseHive() {
         if (gamepad1.dpad_down && !prevDown) {
             isRedAlliance = !isRedAlliance;
             activeGoal = -1;
@@ -385,47 +422,51 @@ public class mechanumtest extends OpMode {
             gamepad1.rumbleBlips(2);
         }
         prevUp = gamepad1.dpad_up;
-        aimer = aimers[activeGoal >= 0 ? activeGoal : NO_GOAL];
-        Target target = activeGoal >= 0 ? seen[activeGoal] : null;
-        boolean targetVisible = target != null;
-        boolean tracking = aimer.isTracking(now);
-        double aimErrorDeg = tracking ? aimer.errorDeg(now) : 0;
-        boolean parked = tracking && aimer.isParked(now);
-        // LOCKED only when the camera itself sees the hive in the middle
-        boolean locked = tracking && !parked && targetVisible
-                && Math.abs(target.tx) <= LOCKED_TOLERANCE_DEG + 1.0 && Math.abs(aimErrorDeg) <= LOCKED_TOLERANCE_DEG;
+    }
 
-        // ======================= ADDED: LT and RT =======================
+    // ADDED: LT = intake, RT = shot, LT + RT together = position reset
+    private void handleTriggers() {
+        // LT + RT pressed TOGETHER (within 0.12 s, not during a shot): the robot is in the start corner ->
+        // reset the odometry (remembered hives are kept)
+        boolean ltNow = gamepad1.left_trigger > 0.5, rtNow = gamepad1.right_trigger > 0.5;
+        if (!ltNow) ltDownSinceMs = Double.NaN; else if (Double.isNaN(ltDownSinceMs)) ltDownSinceMs = now;
+        if (!rtNow) rtDownSinceMs = Double.NaN; else if (Double.isNaN(rtDownSinceMs)) rtDownSinceMs = now;
+        bothTriggers = ltNow && rtNow && Math.abs(ltDownSinceMs - rtDownSinceMs) <= RT_CHORD_WAIT_MS && Double.isNaN(feedStartMs);
+        if (bothTriggers && !resetChord) {
+            pinpoint.setPosition(new Pose2D(DistanceUnit.INCH, 0, 0, AngleUnit.DEGREES, 0));
+            for (TurretAimer a : aimers) a.resetMotion();
+            gamepad1.rumbleBlips(3);
+        }
+        resetChord = bothTriggers;
+
         // LT (intake only): tap = on/off, hold = backwards while held. (LT+RT = position reset, not a tap.)
-        boolean ltDown = gamepad1.left_trigger > 0.5;
-        if (ltDown && !prevLT) { ltPressedMs = now; ltChord = false; }
-        if (bothTriggers) ltChord = true;   // part of the LT+RT reset, not an LT tap
-        ltReverse = ltDown && !ltChord && now - ltPressedMs >= LT_HOLD_MS;
-        if (!ltDown && prevLT && !ltChord && now - ltPressedMs < LT_HOLD_MS) ltIntakeOn = !ltIntakeOn;
-        prevLT = ltDown;
+        if (ltNow && !prevLT) { ltPressedMs = now; ltChord = false; }
+        if (bothTriggers) ltChord = true;
+        ltReverse = ltNow && !ltChord && now - ltPressedMs >= LT_HOLD_MS;
+        if (!ltNow && prevLT && !ltChord && now - ltPressedMs < LT_HOLD_MS) ltIntakeOn = !ltIntakeOn;
+        prevLT = ltNow;
+
         // RT shot: retract the clencher; from HALFWAY through its move, intake + transfer run RT_FEED_MS;
         // then the clencher deploys again
-        boolean rtDown = gamepad1.right_trigger > 0.5;
-        if (rtDown && !prevRT) rtPendingMs = now;
+        if (rtNow && !prevRT) rtPendingMs = now;
         if (bothTriggers) rtPendingMs = Double.NaN;   // LT+RT = reset, not a shot (letting go of RT doesn't cancel)
-        prevRT = rtDown;
+        prevRT = rtNow;
         if (!Double.isNaN(rtPendingMs) && now - rtPendingMs >= RT_CHORD_WAIT_MS) {
             rtPendingMs = Double.NaN;
             double moveMs = trans_open ? CLENCHER_MOVE_MS : 0;
-            trans_open = false;
-            transfer1.setPosition(clencherRetracted);
-            lastClencherSendMs = now;
+            setClencher(false);
             feedStartMs = now + moveMs / 2;
             feedEndMs = feedStartMs + RT_FEED_MS;
         }
-        boolean feedActive = !Double.isNaN(feedStartMs) && now >= feedStartMs && now < feedEndMs;
+        feedActive = !Double.isNaN(feedStartMs) && now >= feedStartMs && now < feedEndMs;
         if (!Double.isNaN(feedStartMs) && now >= feedEndMs) {   // the feed is over: deploy again
             feedStartMs = Double.NaN;
-            trans_open = true;
-            transfer1.setPosition(clencherDeployed);
-            lastClencherSendMs = now;
+            setClencher(true);
         }
+    }
 
+    // A toggles intake + transfer (as before); LT runs the intake; the RT shot runs both
+    private void runIntakeAndTransfer() {
         if(gamepad1.a && !prevA){
             toggleIntake(1);
         }
@@ -433,7 +474,9 @@ public class mechanumtest extends OpMode {
         // ADDED: intake + transfer are set in ONE place, because A, LT and RT all use them
         intake.setPower(ltReverse ? 1.0 : ((in_run || ltIntakeOn || feedActive) ? -1.0 : 0.0));
         trans.setPower(feedActive ? -1.0 : (in_run ? -1 * aTransPower : 0.0));
+    }
 
+    private void drive() {
         double vertical = -gamepad1.left_stick_y;
         double horizontal = -gamepad1.left_stick_x;   // ADDED fix: was +, which slid the robot the wrong way
         double pivot = -gamepad1.right_stick_x;
@@ -443,17 +486,15 @@ public class mechanumtest extends OpMode {
         RB.setPower(pivot + (vertical - horizontal));
         LF.setPower(-pivot + (vertical - horizontal));
         LB.setPower(-pivot + (vertical + horizontal));
+    }
 
+    // B toggles the flywheel and LB / RB change bpow (as before). ADDED: AUTO POWER once the hive's distance is
+    // known: one of Will's 3 speeds by distance (see speedStepFor)
+    private void runFlywheel() {
         if(gamepad1.b && !prevB){
             out_run = !out_run;
         }
         prevB = gamepad1.b;
-        telemetry.addData("Encoder Counts", turret_shoot.getCurrentPosition());
-        if(out_run) {
-            turret_shoot.setVelocity(MAX_TICKS_PER_SECOND * bpow);
-            telemetry.addData("Alleged velocity", MAX_TICKS_PER_SECOND * bpow);
-        }
-        else turret_shoot.setPower(0);
         if(gamepad1.left_bumper && !prevLB){
             bpow -= 0.05;
         }
@@ -462,59 +503,48 @@ public class mechanumtest extends OpMode {
             bpow += 0.05;
         }
         prevRB = gamepad1.right_bumper;
-        telemetry.addData("Supposed fly speed", bpow);
 
-        // ======================= ADDED: headlights =======================
-        // turretLight: on while LOCKED (held 0.2 s so it doesn't blink). flyLight: flywheel within 8% of its
-        // speed (off again only past 12%, so it doesn't flicker).
-        if (locked) turretLightUntilMs = now + 200;
-        double flyTarget = MAX_TICKS_PER_SECOND * bpow;
-        double flyOff = flyTarget > 0 ? Math.abs(turret_shoot.getVelocity() - flyTarget) / flyTarget : 1;
-        if (!out_run || flyTarget <= 0) flyLightOn = false;
-        else if (flyOff <= 0.08) flyLightOn = true;
-        else if (flyOff > 0.12) flyLightOn = false;
-        if (turretLight != null) turretLight.setPosition(now < turretLightUntilMs ? LIGHT_ON : LIGHT_OFF);
-        if (flyLight != null) flyLight.setPosition(flyLightOn ? LIGHT_ON : LIGHT_OFF);
-
-        // ======================= ADDED: auto aim + clencher on the Driver Station =======================
-        telemetry.addLine(locked ? "TURRET LOCKED" : "TURRET UNLOCKED");
-        if (activeGoal < 0) {
-            int[] cells = colorCells();
-            telemetry.addData("Aim", "looking for the %s hive (tags %d-%d or %d-%d)", isRedAlliance ? "RED" : "BLUE",
-                    CELL_BASES[cells[0]], CELL_BASES[cells[0]] + 3, CELL_BASES[cells[1]], CELL_BASES[cells[1]] + 3);
+        if (!Double.isNaN(shotDistanceM)) {
+            speedStep = speedStepFor(shotDistanceM, speedStep);
+            double rps = speedForStep(speedStep);
+            flyTargetTps = Math.min(MAX_TICKS_PER_SECOND, rps * FLYWHEEL_TICKS_PER_REV);
+            launchAngleDeg = launchAngleFor(rps, shotDistanceM);
         } else {
-            telemetry.addData("Aim", "%s by %s, turret %.0f deg -> %.0f deg%s", clusterName(CELL_BASES[activeGoal]),
-                    aimer.source(now), turretDeg, tracking ? aimer.desiredDeg(now) : turretDeg, parked ? " (blind spot)" : "");
+            flyTargetTps = MAX_TICKS_PER_SECOND * bpow;   // no distance yet: the original bpow speed
         }
-        telemetry.addData("Camera sees", "%s%s", tagsInView, targetVisible ? String.format(Locale.US, ", tx %+.1f deg", target.tx) : "");
-        telemetry.addData("Clencher", trans_open ? "DEPLOYED" : "RETRACTED");
-        telemetry.addData("Intake", ltReverse ? "BACKWARDS" : ((in_run || ltIntakeOn || feedActive) ? "ON" : "off"));
-        telemetry.update();
+        if(out_run) {
+            turret_shoot.setVelocity(flyTargetTps);
+        }
+        else turret_shoot.setPower(0);
+    }
 
+    // ADDED: AUTO ANGLE: the hood goes to the launch angle (it homes to its bottom stop first, after PLAY)
+    private void runHood() {
+        double hoodTarget = Double.isNaN(launchAngleDeg) ? hood.position() : hoodPositionFor(launchAngleDeg);
+        double power = hood.update(now, dt, hoodTarget);
+        hood1.setPower(power);
+        hood2.setPower(power);
+    }
+
+    // Y toggles the clencher (as before). ADDED: re-send its position every 0.1 s so it holds
+    private void runClencher() {
         if(gamepad1.y && !prevY){
             toggleLetOut();
-            lastClencherSendMs = now;   // ADDED
         }
         prevY = gamepad1.y;
-        // ADDED: re-send the clencher position every 0.1 s, so it holds even if a command gets lost
-        if (now - lastClencherSendMs > 100) {
-            transfer1.setPosition(trans_open ? clencherDeployed : clencherRetracted);
-            lastClencherSendMs = now;
-        }
+        if (now - lastClencherSendMs > 100) setClencher(trans_open);
+    }
 
-        // ADDED: RT/LT are the shot and the intake now, so the hood stays where it is
-        hood1.setPower(0);
-        hood2.setPower(0);
-
-        // Turret: D-pad left/right moves it by hand (as before); otherwise the AUTO AIM points it (ADDED)
+    // D-pad left/right moves the turret by hand (as before); otherwise the AUTO AIM points it (ADDED)
+    private void runTurret() {
         boolean turretManual = gamepad1.dpad_right || gamepad1.dpad_left;
         if (turretManual) manualHold = true;
-        else if (manualHold && (targetVisible || tracking)) manualHold = false;   // aim takes over again
+        else if (manualHold && (target != null || tracking)) manualHold = false;   // aim takes over again
         double power = 0, tps = 0;
         boolean useVelocity = false;
         if(gamepad1.dpad_right) power = 0.5;
         else if(gamepad1.dpad_left) power = -0.5;
-        else if (manualHold) power = 0;                              // stay where you left it until the hive is seen
+        else if (manualHold) power = 0;   // stays where you left it until the hive is seen
         else if (tracking) { tps = aimer.update(now) * TURRET_TICKS_PER_DEGREE * TURRET_DIR; useVelocity = true; }
         else { tps = searchSpeedDegPerSec(turretDeg) * TURRET_TICKS_PER_DEGREE * TURRET_DIR; useVelocity = true; }
         if (turretManual || manualHold || tracking) searching = false;
@@ -528,10 +558,57 @@ public class mechanumtest extends OpMode {
                 Math.min((TURRET_LIMIT_SLOWDOWN * degToMax + 20) * TURRET_TICKS_PER_DEGREE, tps));
         double direction = useVelocity ? tps : power;
         maxed = (ticks >= maxticks && direction > 0) || (ticks <= minticks && direction < 0);
+        applyTurretMotorPidf();
         if (maxed) { turret_aim.setPower(0); lastTurretCmdTps = 0; }
         else if (useVelocity) { turret_aim.setVelocity(tps); lastTurretCmdTps = tps; }
         else { turret_aim.setPower(power); lastTurretCmdTps = turret_aim.getVelocity(); }
     }
+
+    // ADDED: turretLight on while LOCKED (held 0.2 s so it doesn't blink); flyLight when the flywheel is within
+    // 8% of its speed (off again only past 12%, so it doesn't flicker)
+    private void updateLights() {
+        if (locked) turretLightUntilMs = now + 200;
+        double flyOff = flyTargetTps > 0 ? Math.abs(turret_shoot.getVelocity() - flyTargetTps) / flyTargetTps : 1;
+        if (!out_run || flyTargetTps <= 0) flyLightOn = false;
+        else if (flyOff <= 0.08) flyLightOn = true;
+        else if (flyOff > 0.12) flyLightOn = false;
+        if (turretLight != null) turretLight.setPosition(now < turretLightUntilMs ? LIGHT_ON : LIGHT_OFF);
+        if (flyLight != null) flyLight.setPosition(flyLightOn ? LIGHT_ON : LIGHT_OFF);
+    }
+
+    private void showTelemetry() {
+        telemetry.addData("maxed?", maxed);
+        telemetry.addData("ticks", ticks);
+        telemetry.addData("X Position (in)", currentPose.getX(DistanceUnit.INCH));
+        telemetry.addData("Y Position (in)", currentPose.getY(DistanceUnit.INCH));
+        telemetry.addData("Heading (deg)", currentPose.getHeading(AngleUnit.DEGREES));
+        telemetry.addData("Encoder Counts", turret_shoot.getCurrentPosition());
+        if (out_run) telemetry.addData("Alleged velocity", flyTargetTps);
+        telemetry.addData("Supposed fly speed", bpow);
+        // ADDED: auto aim, auto power/angle, clencher, intake
+        telemetry.addLine(locked ? "TURRET LOCKED" : "TURRET UNLOCKED");
+        if (activeGoal < 0) {
+            int[] cells = colorCells();
+            telemetry.addData("Aim", "looking for the %s hive (tags %d-%d or %d-%d)", isRedAlliance ? "RED" : "BLUE",
+                    CELL_BASES[cells[0]], CELL_BASES[cells[0]] + 3, CELL_BASES[cells[1]], CELL_BASES[cells[1]] + 3);
+        } else {
+            telemetry.addData("Aim", "%s by %s, turret %.0f deg -> %.0f deg%s", clusterName(CELL_BASES[activeGoal]),
+                    aimer.source(now), turretDeg, tracking ? aimer.desiredDeg(now) : turretDeg, parked ? " (blind spot)" : "");
+        }
+        telemetry.addData("Camera sees", "%s%s", tagsInView, target != null ? String.format(Locale.US, ", tx %+.1f deg", target.tx) : "");
+        if (Double.isNaN(shotDistanceM)) {
+            telemetry.addData("Shot", "no hive distance yet: flywheel = bpow (LB/RB), hood stays");
+        } else {
+            telemetry.addData("Shot", "%.2f m: %s speed %.0f t/s, angle %s%s", shotDistanceM, SPEED_NAMES[speedStep],
+                    flyTargetTps, Double.isNaN(launchAngleDeg) ? "can't reach at this speed" : String.format(Locale.US, "%.0f deg", launchAngleDeg),
+                    hood.isHoming() ? " (hood homing)" : "");
+        }
+        telemetry.addData("Clencher", trans_open ? "DEPLOYED" : "RETRACTED");
+        telemetry.addData("Intake", ltReverse ? "BACKWARDS" : ((in_run || ltIntakeOn || feedActive) ? "ON" : "off"));
+        telemetry.update();
+    }
+
+    // ======================= Will's shot math =======================
 
     private static double calculate_fly_speed(float flylen, double x, double y, double ang, Telemetry telemetry){
         try {
@@ -581,7 +658,52 @@ public class mechanumtest extends OpMode {
 
         return new double[] {lowAngleDegrees, highAngleDegrees};
     }
-    // CHANGED: A just flips in_run; the intake and transfer power are set every loop in loop()
+
+    /** ADDED: Will's 3 speeds, flywheel revolutions per second: 0 = slow, 1 = medium, 2 = fast. */
+    private double speedForStep(int step) {
+        return step == 0 ? slowspeedspeed : (step == 1 ? medspeedspeed : fastspeedspeed);
+    }
+
+    /**
+     * ADDED: AUTO POWER. Which of Will's 3 speeds for a hive this far away (meters): up to slowspeedlen =
+     * slow, up to medspeedlen = medium, farther = fast. It only changes step once the distance is
+     * SPEED_STEP_MARGIN_M past the line, so a distance right at a line doesn't flip the flywheel's speed.
+     */
+    private int speedStepFor(double distanceM, int currentStep) {
+        int step = distanceM <= slowspeedlen ? 0 : (distanceM <= medspeedlen ? 1 : 2);
+        if (currentStep < 0) return step;
+        if (step > currentStep && distanceM < lineAbove(currentStep) + SPEED_STEP_MARGIN_M) return currentStep;
+        if (step < currentStep && distanceM > lineAbove(currentStep - 1) - SPEED_STEP_MARGIN_M) return currentStep;
+        return step;
+    }
+
+    /** ADDED: the distance line above a speed step (between it and the next faster step). */
+    private double lineAbove(int step) {
+        return step == 0 ? slowspeedlen : medspeedlen;
+    }
+
+    /**
+     * ADDED: AUTO ANGLE. The launch angle (deg) that makes the shot at this flywheel speed, from Will's
+     * angleFromRPS(): the flatter answer if the hood can reach it, else the steeper one, else the reachable
+     * angle closest to one of them. NaN if this speed can't reach the hive at all.
+     */
+    private double launchAngleFor(double rps, double distanceM) {
+        double[] angles = angleFromRPS(rps, flywheel_dia, flyconstant, distanceM, GOAL_HEIGHT_ABOVE_SHOOTER_M);
+        if (angles.length == 0) return Double.NaN;
+        double lo = Math.min(HOOD_ANGLE_AT_BOTTOM_DEG, HOOD_ANGLE_AT_TOP_DEG), hi = Math.max(HOOD_ANGLE_AT_BOTTOM_DEG, HOOD_ANGLE_AT_TOP_DEG);
+        for (double a : angles) if (a >= lo && a <= hi) return a;   // flatter one first
+        return Math.max(lo, Math.min(hi, angles[0]));
+    }
+
+    /** ADDED: hood position (0 = bottom stop, 1 = top stop) for a launch angle. */
+    private static double hoodPositionFor(double angleDeg) {
+        double p = (angleDeg - HOOD_ANGLE_AT_BOTTOM_DEG) / (HOOD_ANGLE_AT_TOP_DEG - HOOD_ANGLE_AT_BOTTOM_DEG);
+        return Math.max(0, Math.min(1, p));
+    }
+
+    // ======================= Will's buttons =======================
+
+    // CHANGED: A just flips in_run; the intake and transfer power are set every loop in runIntakeAndTransfer()
     // (A, LT and RT all share those motors). trans_power is still the transfer power for A.
     private void toggleIntake(double trans_power){
         aTransPower = trans_power;
@@ -590,8 +712,54 @@ public class mechanumtest extends OpMode {
 
     // CHANGED: uses the Clencher Tuner's positions: true = DEPLOYED, false = RETRACTED
     private void toggleLetOut(){
-        trans_open = !trans_open;
-        transfer1.setPosition(trans_open ? clencherDeployed : clencherRetracted);
+        setClencher(!trans_open);
+    }
+
+    // ======================= ADDED: setup =======================
+
+    /** The odometry pods' settings, so x/y are right for the auto aim. */
+    private void setUpOdometry() {
+        pinpoint.setOffsets(X_POD_OFFSET_MM, Y_POD_OFFSET_MM, DistanceUnit.MM);
+        pinpoint.setEncoderResolution(POD_TYPE);
+        pinpoint.setEncoderDirections(X_POD_DIRECTION, Y_POD_DIRECTION);
+        pinpoint.resetPosAndIMU();   // robot must be still for a moment
+        pinpoint.setPosition(new Pose2D(DistanceUnit.MM, 0, 0, AngleUnit.DEGREES, 0));
+    }
+
+    /** Turret limits, ticks per degree and the aimers (one per hive). */
+    private void initAutoAim() {
+        turret_aim.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        applyTurretMotorPidf();
+        TURRET_TICKS_PER_DEGREE = LimitsTuner.ticksPerDegreeInUse();   // Ticks Per Degree OpMode / camera check, else 4.0
+        turretScaleMeasured = LimitsTuner.isUsableMethod(LimitsTuner.calibrationMethod())
+                && !Double.isNaN(LimitsTuner.loadTicksPerDegree());
+        int[] saved = LimitsTuner.loadLimits();                         // Limits Tuner, else the original limits
+        limitsFromTuner = saved != null;
+        if (saved != null) {
+            minticks = initticks + saved[0];
+            maxticks = initticks + saved[1];
+        }
+        headingSign = LimitsTuner.loadHeadingSign();
+        for (int i = 0; i < aimers.length; i++) aimers[i] = new TurretAimer(turretDegrees(minticks), turretDegrees(maxticks));
+        aimer = aimers[NO_GOAL];
+    }
+
+    /** Clencher positions from the Clencher Tuner; headlights off (no crash if they aren't configured). */
+    private void initClencherAndLights() {
+        double[] c = ClencherTuner.positionsInUse();   // {retracted, deployed}
+        clencherRetracted = c[0];
+        clencherDeployed = c[1];
+        turretLight = hardwareMap.tryGet(Servo.class, "turretLight");
+        flyLight = hardwareMap.tryGet(Servo.class, "flyLight");
+        if (turretLight != null) turretLight.setPosition(LIGHT_OFF);
+        if (flyLight != null) flyLight.setPosition(LIGHT_OFF);
+    }
+
+    /** Clencher DEPLOYED (true) or RETRACTED (false). */
+    private void setClencher(boolean deployed) {
+        trans_open = deployed;
+        transfer1.setPosition(deployed ? clencherDeployed : clencherRetracted);
+        lastClencherSendMs = now;
     }
 
     // ======================= ADDED: auto aim helpers =======================
@@ -623,7 +791,7 @@ public class mechanumtest extends OpMode {
     }
 
     /** One entry per hive (CELL_BASES order), null where that hive isn't in view. tx = the hive's CENTER. */
-    private Target[] findTargets(LLResult r, double nowMs) {
+    private Target[] findTargets(LLResult r) {
         Target[] out = new Target[CELL_BASES.length];
         tagsInView = "none";
         if (r == null || !r.isValid() || r.getStaleness() > MAX_FRAME_AGE_MS) return out;
@@ -656,7 +824,7 @@ public class mechanumtest extends OpMode {
                 }
             }
             if (t.count == 0) continue;
-            t.tx = clusterFits[g].centerTx(nowMs, member, tx, t.count);
+            t.tx = clusterFits[g].centerTx(now, member, tx, t.count);
             if (distCount > 0) t.distanceIn = distSum / distCount;
             t.frameAgeMs = frameAgeMs;
             out[g] = t;

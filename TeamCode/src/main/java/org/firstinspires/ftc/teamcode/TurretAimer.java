@@ -205,6 +205,13 @@ public class TurretAimer {
     private double aimX() { return goalX - clamp(velX, -100, 100) * clamp(leadTimeSec, 0, 1.5); }
     private double aimY() { return goalY - clamp(velY, -100, 100) * clamp(leadTimeSec, 0, 1.5); }
 
+    /** Estimated distance from the turret to the goal right now (inches), or NaN if unknown. */
+    public double distanceNow(double nowMs) {
+        if (!pointValid(nowMs)) return Double.NaN;
+        double[] p = pivot();
+        return Math.hypot(goalX - p[0], goalY - p[1]);
+    }
+
     /** Turret angle (+ = right) that points at the goal, before limits. */
     private double rawBearingDeg(double nowMs) {
         if (pointValid(nowMs)) {
