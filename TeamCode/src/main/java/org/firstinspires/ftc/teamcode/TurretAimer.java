@@ -176,14 +176,6 @@ public class TurretAimer {
         return hasDirection && nowMs - lastSeenMs <= directionMemoryMs;
     }
 
-    /** Drop what we know about the goal (it wasn't where we thought). The camera will find it again. */
-    public void forget() {
-        hasPoint = false;
-        hasDirection = false;
-        outliers = 0;
-        iTerm = 0;
-    }
-
     /** True while we know where the goal is (from the camera, odometry, or recent heading). */
     public boolean isTracking(double nowMs) {
         return pointValid(nowMs) || directionValid(nowMs);
@@ -197,20 +189,10 @@ public class TurretAimer {
         return "";
     }
 
-    public double msSinceSeen(double nowMs) {
-        return nowMs - lastSeenMs;
-    }
-
     // ---- Small read-outs for the TeleOp / HUD (added after Thursday; they don't change the aiming) ----
-
-    /** The remembered goal point {x, y} (odometry frame, inches), or null. */
-    public double[] goalPoint() { return hasPoint ? new double[]{goalX, goalY} : null; }
 
     /** Turret angle (+ = right, not limited) toward where the goal was last seen, from the heading. NaN if never seen. */
     public double lastSeenBearingDeg() { return hasDirection ? wrap180(curHeading - goalDirDeg) : Double.NaN; }
-
-    /** Robot speed, inches/s. */
-    public double speedInPerSec() { return Math.hypot(velX, velY); }
 
     /** The robot's position was reset (LT+RT): forget its recent motion so the jump isn't read as speed. */
     public void resetMotion() {
@@ -222,20 +204,6 @@ public class TurretAimer {
     /** Where to aim: the goal, shifted against the robot's motion so the moving ball lands in it. */
     private double aimX() { return goalX - clamp(velX, -100, 100) * clamp(leadTimeSec, 0, 1.5); }
     private double aimY() { return goalY - clamp(velY, -100, 100) * clamp(leadTimeSec, 0, 1.5); }
-
-    /** Distance to use for flywheel speed and hood: to the lead point while moving. NaN if unknown. */
-    public double shotDistanceNow(double nowMs) {
-        if (!pointValid(nowMs)) return Double.NaN;
-        double[] p = pivot();
-        return Math.hypot(aimX() - p[0], aimY() - p[1]);
-    }
-
-    /** Estimated distance from the turret to the goal right now, or NaN if unknown. */
-    public double distanceNow(double nowMs) {
-        if (!pointValid(nowMs)) return Double.NaN;
-        double[] p = pivot();
-        return Math.hypot(goalX - p[0], goalY - p[1]);
-    }
 
     /** Turret angle (+ = right) that points at the goal, before limits. */
     private double rawBearingDeg(double nowMs) {

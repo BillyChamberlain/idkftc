@@ -32,11 +32,6 @@ public class LimelightCam {
         return limelight.getLatestResult();
     }
 
-    /** True while the Control Hub is talking to the Limelight. */
-    public boolean isConnected(){
-        return limelight.isConnected();
-    }
-
     public LLResult getVars(Telemetry telemetry){
         YawPitchRollAngles orientation  = imu.getRobotYawPitchRollAngles();
         //TODO: maybe add limelight.updateRobotOrientation(orientation.getYaw());

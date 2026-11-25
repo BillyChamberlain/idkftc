@@ -38,6 +38,9 @@ import java.util.Locale;
  *     then it deploys again.   LT tap = intake only on/off, LT hold = intake backwards.
  *   - Headlights: turretLight on when the turret is LOCKED, flyLight on when the flywheel is at speed.
  *   - Strafe stick fixed (it slid the robot the opposite way).
+ *   - Turned off (commented out): the old "Limelight -> Pinpoint position override". The camera rides on the
+ *     turret, so it broke the auto aim's odometry. X/Y on the Driver Station now count from INIT (or LT+RT).
+ *   - The hood isn't moved in this TeleOp (RT/LT used to move it; they are the shot and the intake now).
  */
 @TeleOp
 public class mechanumtest extends OpMode {
@@ -154,6 +157,8 @@ public class mechanumtest extends OpMode {
     private int sweepDir = 1, searchSign = 1;
     private double searchAmpDeg;
     private int headingSign = 1;            // -1 only if the Limits Tuner camera check found it mirrored
+    private double lastGoodX = 0, lastGoodY = 0;   // last good Pinpoint x/y (one bad read mustn't look like a jump)
+    private double ltDownSinceMs = Double.NaN, rtDownSinceMs = Double.NaN;   // for the LT+RT chord
     private boolean turretScaleMeasured;
     private double lastPictureTs = Double.NaN, lastPictureSig = Double.NaN;
     private String tagsInView = "none";
@@ -245,7 +250,7 @@ public class mechanumtest extends OpMode {
         if (gamepad1.x) isRedAlliance = false;
         if (gamepad1.b) isRedAlliance = true;
         telemetry.addData("Alliance", isRedAlliance ? "RED  (X = blue)" : "BLUE  (B = red)");
-        telemetry.addData("Turret", "point it STRAIGHT FORWARD now (that's zero)");
+        telemetry.addData("Turret", "zeroed where it pointed when INIT was pressed: if it wasn't forward, STOP, point it forward, INIT again");
         telemetry.addData("Turret limits", "%d to %d ticks (%s), %.2f ticks/deg (%s)", minticks - initticks, maxticks - initticks,
                 LimitsTuner.loadLimits() != null ? "Limits Tuner" : "original", TURRET_TICKS_PER_DEGREE,
                 turretScaleMeasured ? "measured" : "Thursday's 4.0");
@@ -298,12 +303,37 @@ public class mechanumtest extends OpMode {
         telemetry.addData("Y Position (in)", currentPose.getY(DistanceUnit.INCH));
         telemetry.addData("Heading (deg)", currentPose.getHeading(AngleUnit.DEGREES));
 
+        // ADDED note: Will's original sweep idea, left here turned off. The ADDED auto aim below replaces it
+        // (it sweeps between the same limits when no hive is seen). aimrightpositive / kp / tagFound belong to it.
+// 2. Update sweep direction based on soft limits
+//        if (ticks <= minticks) {
+//            aimrightpositive = true; // Reached left limit, sweep right
+//        } else if (ticks >= maxticks) {
+//            aimrightpositive = false; // Reached right limit, sweep left
+//        }
+//
+//// 3. Control logic
+//        if (!tagFound) {
+//            // Tag NOT found: Sweep back and forth within tick limits
+//            if (aimrightpositive) {
+//                turret_aim.setPower(0.7);
+//            } else {
+//                turret_aim.setPower(-0.7);
+//            }
+//        } else {
+//            // Tag FOUND: Center target between -12 and -4 degrees
+//                // Target is to the right of target window -> turn towards it
+//                turret_aim.setPower((aimrightpositive? 1 : -1) * kp * (tx-8));
+//
+//        }
+
         // ======================= ADDED: AUTO AIM, where is the hive? =======================
         double turretDeg = turretDegrees(ticks);
         double headingDeg = pinpoint.getHeading(UnnormalizedAngleUnit.DEGREES);   // doesn't jump at 180
         boolean odometryOk = pinpoint.getDeviceStatus() == GoBildaPinpointDriver.DeviceStatus.READY;
         double robotX = currentPose.getX(DistanceUnit.INCH), robotY = currentPose.getY(DistanceUnit.INCH);
         odometryOk = odometryOk && !Double.isNaN(robotX) && !Double.isNaN(robotY);
+        if (odometryOk) { lastGoodX = robotX; lastGoodY = robotY; }
         for (TurretAimer a : aimers) {
             a.kP = TurretTuning.aimKP;   // gains: TurretTuning (live in Panels)
             a.kI = TurretTuning.aimKI;
@@ -311,12 +341,17 @@ public class mechanumtest extends OpMode {
             a.fastestWay = TurretTuning.fastestWay;
             a.maxSpeedDegPerSec = Math.min(TurretTuning.maxAimSpeedDegPerSec, 0.9 * TURRET_MAX_TICKS_PER_SEC / TURRET_TICKS_PER_DEGREE);
             a.useOdometry = odometryOk;
-            a.record(now, turretDeg, headingSign * headingDeg, odometryOk ? robotX : 0, odometryOk ? headingSign * robotY : 0);
+            a.record(now, turretDeg, headingSign * headingDeg, lastGoodX, headingSign * lastGoodY);
         }
         applyTurretMotorPidf();
 
-        // LT + RT together: the robot is in the start corner -> reset the odometry (remembered hives are kept)
-        boolean bothTriggers = gamepad1.left_trigger > 0.5 && gamepad1.right_trigger > 0.5;
+        // LT + RT pressed TOGETHER (within 0.12 s, not during a shot): the robot is in the start corner ->
+        // reset the odometry (remembered hives are kept)
+        boolean ltNow = gamepad1.left_trigger > 0.5, rtNow = gamepad1.right_trigger > 0.5;
+        if (!ltNow) ltDownSinceMs = Double.NaN; else if (Double.isNaN(ltDownSinceMs)) ltDownSinceMs = now;
+        if (!rtNow) rtDownSinceMs = Double.NaN; else if (Double.isNaN(rtDownSinceMs)) rtDownSinceMs = now;
+        boolean bothTriggers = ltNow && rtNow && Math.abs(ltDownSinceMs - rtDownSinceMs) <= RT_CHORD_WAIT_MS
+                && Double.isNaN(feedStartMs);
         if (bothTriggers && !resetChord) {
             pinpoint.setPosition(new Pose2D(DistanceUnit.INCH, 0, 0, AngleUnit.DEGREES, 0));
             for (TurretAimer a : aimers) a.resetMotion();
@@ -364,7 +399,7 @@ public class mechanumtest extends OpMode {
         // LT (intake only): tap = on/off, hold = backwards while held. (LT+RT = position reset, not a tap.)
         boolean ltDown = gamepad1.left_trigger > 0.5;
         if (ltDown && !prevLT) { ltPressedMs = now; ltChord = false; }
-        if (ltDown && gamepad1.right_trigger > 0.5) ltChord = true;
+        if (bothTriggers) ltChord = true;   // part of the LT+RT reset, not an LT tap
         ltReverse = ltDown && !ltChord && now - ltPressedMs >= LT_HOLD_MS;
         if (!ltDown && prevLT && !ltChord && now - ltPressedMs < LT_HOLD_MS) ltIntakeOn = !ltIntakeOn;
         prevLT = ltDown;
@@ -372,7 +407,7 @@ public class mechanumtest extends OpMode {
         // then the clencher deploys again
         boolean rtDown = gamepad1.right_trigger > 0.5;
         if (rtDown && !prevRT) rtPendingMs = now;
-        if (!rtDown || gamepad1.left_trigger > 0.5) rtPendingMs = Double.NaN;
+        if (bothTriggers) rtPendingMs = Double.NaN;   // LT+RT = reset, not a shot (letting go of RT doesn't cancel)
         prevRT = rtDown;
         if (!Double.isNaN(rtPendingMs) && now - rtPendingMs >= RT_CHORD_WAIT_MS) {
             rtPendingMs = Double.NaN;

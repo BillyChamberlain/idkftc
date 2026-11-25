@@ -111,7 +111,6 @@ public class TurretCheck {
         status = "Step 1: measuring ticks per degree. Keep the robot still.";
     }
 
-    public void cancel() { discard(); }
 
     public double update(double nowMs, int ticks, double headingDeg, boolean newPicture, double tagTx) {
         boolean tagSeen = newPicture && !Double.isNaN(tagTx);

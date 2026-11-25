@@ -29,7 +29,7 @@ import java.util.Locale;
  * Controls (gamepad1):
  *   X          pick 1 / 2 / 3 / 4 balls (rumbles that many times)
  *   RB         AUTO LOAD: run intake + transfer, stop when the current says it's full
- *   A          run intake + transfer by hand (no auto stop; in the main TeleOp A is the transfer only and LT the intake)
+ *   A          run intake + transfer by hand (same as A in the main TeleOp; no auto stop here)
  *   LT (hold)  run both backwards (clear a jam)
  *   LB         LEARN: with this many balls loaded and the transfer pushing against the
  *              closed clencher, save the current reading as "full" for this ball count

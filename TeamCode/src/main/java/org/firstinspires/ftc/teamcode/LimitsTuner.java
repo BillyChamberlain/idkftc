@@ -424,12 +424,12 @@ public class LimitsTuner extends OpMode {
     /** Left limit in use now (saved file, else the one in code), in encoder ticks. */
     private int currentLeft() {
         if (saved != null) return mechanumtest.TURRET_DIR > 0 ? saved[0] : saved[1];
-        return (int) Math.round(-mechanumtest.TURRET_DIR * mechanumtest.TURRET_LEFT_LIMIT_DEG * mechanumtest.TURRET_TICKS_PER_DEGREE);
+        return (int) Math.round(-mechanumtest.TURRET_DIR * mechanumtest.TURRET_LEFT_LIMIT_DEG * mechanumtest.THURSDAY_TICKS_PER_DEGREE);  // the original ticks
     }
 
     private int currentRight() {
         if (saved != null) return mechanumtest.TURRET_DIR > 0 ? saved[1] : saved[0];
-        return (int) Math.round(mechanumtest.TURRET_DIR * mechanumtest.TURRET_RIGHT_LIMIT_DEG * mechanumtest.TURRET_TICKS_PER_DEGREE);
+        return (int) Math.round(mechanumtest.TURRET_DIR * mechanumtest.TURRET_RIGHT_LIMIT_DEG * mechanumtest.THURSDAY_TICKS_PER_DEGREE);  // the original ticks
     }
 
     /** "35 deg right" / "280 deg left" from encoder ticks. */
