@@ -1,0 +1,66 @@
+== /sdcard/FIRST/23737.xml
+<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<Robot type="FirstInspires-FTC">
+    <EthernetDevice name="limelights" serialNumber="EthernetOverUsb:eth0:172.29.0.28" name="limelights" port="-1" ipAddress="172.29.0.1" />
+    <LynxUsbDevice name="Control Hub Portal" serialNumber="(embedded)" parentModuleAddress="173">
+        <LynxModule name="Expansion Hub 2" port="2">
+            <goBILDA5202SeriesMotor name="turret_Motor" port="0" />
+            <goBILDA5202SeriesMotor name="mFly" port="1" />
+            <goBILDA5202SeriesMotor name="turn_Table" port="2" />
+            <goBILDA5202SeriesMotor name="intake" port="3" />
+        </LynxModule>
+        <LynxModule name="Control Hub" port="173">
+            <goBILDA5202SeriesMotor name="fRM" port="0" />
+            <goBILDA5202SeriesMotor name="fLM" port="1" />
+            <goBILDA5202SeriesMotor name="bRM" port="2" />
+            <goBILDA5202SeriesMotor name="bLM" port="3" />
+            <Servo name="sServo" port="0" />
+            <Servo name="fly_Wheel" port="4" />
+            <AnalogInput name="encoder" port="1" />
+            <RevColorSensorV3 name="colorSensor" port="0" bus="1" />
+            <ControlHubImuBHI260AP name="imu" port="0" bus="0" />
+        </LynxModule>
+    </LynxUsbDevice>
+</Robot>
+
+== /sdcard/FIRST/Test.xml
+<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<Robot type="FirstInspires-FTC">
+    <LynxUsbDevice name="Control Hub Portal" serialNumber="(embedded)" parentModuleAddress="173">
+        <LynxModule name="Control Hub" port="173">
+            <goBILDA5202SeriesMotor name="rsm1" port="0" />
+            <goBILDA5202SeriesMotor name="rsm2" port="1" />
+            <goBILDA5202SeriesMotor name="lsm1" port="2" />
+            <goBILDA5202SeriesMotor name="lsm2" port="3" />
+            <RevColorSensorV3 name="colorSensor" port="0" bus="0" />
+        </LynxModule>
+    </LynxUsbDevice>
+</Robot>
+
+== /sdcard/FIRST/yeah.xml
+<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<Robot type="FirstInspires-FTC">
+    <LynxUsbDevice name="Control Hub Portal" serialNumber="(embedded)" parentModuleAddress="173">
+        <LynxModule name="Expansion Hub 1" port="1">
+            <goBILDA5202SeriesMotor name="intake" port="0" />
+            <goBILDA5202SeriesMotor name="transfer" port="1" />
+            <goBILDA5202SeriesMotor name="shoot" port="2" />
+            <goBILDA5202SeriesMotor name="aim" port="3" />
+            <Servo name="t1" port="0" />
+            <ContinuousRotationServo name="hood1" port="1" />
+            <ContinuousRotationServo name="hood2" port="2" />
+            <ServoFullRange name="turretLight" port="3" />
+            <ServoFullRange name="flyLight" port="4" />
+        </LynxModule>
+        <LynxModule name="Control Hub" port="173">
+            <goBILDA5202SeriesMotor name="RB" port="0" />
+            <goBILDA5202SeriesMotor name="RF" port="1" />
+            <goBILDA5202SeriesMotor name="LB" port="2" />
+            <goBILDA5202SeriesMotor name="LF" port="3" />
+            <LynxEmbeddedIMU name="imu" port="0" bus="0" />
+            <goBILDAPinpoint name="odcpu" port="0" bus="1" />
+        </LynxModule>
+    </LynxUsbDevice>
+    <EthernetDevice name="limelight" serialNumber="EthernetOverUsb:eth0:172.29.0.21" name="limelight" port="-1" ipAddress="172.29.0.1" />
+</Robot>
+

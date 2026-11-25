@@ -1,0 +1,32 @@
+== /sdcard/FIRST/clencher_positions.txt
+0.190,0.000
+
+== /sdcard/FIRST/sentry_settings.txt
+flywheelTps=925
+hood=0.440
+
+== /sdcard/FIRST/turret_limits.txt
+min_ticks,max_ticks
+-1806,566
+
+== /sdcard/FIRST/turret_ticks_per_degree.txt
+6.6222
+90-degree tuner
+
+== /sdcard/FIRST/turret_tuning.txt
+aimKP=4.0
+aimKI=0.5
+deadbandDeg=4.0
+maxAimSpeedDegPerSec=250.0
+maxAccelDegPerSec2=0.0
+feedForwardGain=1.0
+motorP=10.0
+motorI=1.25
+motorD=0.0
+motorF=12.5
+
+== /sdcard/FIRST/shooter_table.csv
+distance_in,flywheel_tps,hood
+51.7,819,0.500
+64.3,918,0.585
+

@@ -19,7 +19,7 @@ import java.util.regex.Pattern
 
 android {
 
-    compileSdkVersion 30
+    compileSdk 35  // was 30: Panels (the tuning dashboard) needs 34 or later; 35 is the one installed
 
     signingConfigs {
         release {
